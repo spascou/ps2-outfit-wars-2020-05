@@ -1,0 +1,2 @@
+ps2-census==0.10.4
+python-slugify==4.0.0
