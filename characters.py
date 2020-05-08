@@ -1,7 +1,6 @@
 import csv
 import json
 from collections import Counter
-from time import sleep
 from typing import Callable, Dict, List, Tuple, Union
 
 from ps2_census import Collection, Join, Query
@@ -30,6 +29,8 @@ character_events_query_factory: Callable[[], Query] = Query(
     .on("attacker_character_id")
     .to("character_id")
     .inject_at("attacker_character")
+).sort(
+    ("timestamp", -1)
 ).get_factory()
 
 outfit_members_query_factory: Callable[[], Query] = (
@@ -65,8 +66,9 @@ def get_character_events(
         "VEHICLE_DESTROY",
         "FACILITY_CHARACTER",
     ),
-    max_query_events: int = 150,
-    max_query_character_ids: int = 5,
+    max_query_events: int = 250,
+    max_query_character_ids: int = 10,
+    time_step: int = 60 * 10,
 ):
     print(
         f"Getting character {types} events for {len(character_ids)} characters between {from_ts} and {to_ts}"
@@ -80,14 +82,17 @@ def get_character_events(
     for batch_character_ids in batch(character_ids, max_query_character_ids):
         print(f"Getting events for characters {batch_character_ids}")
 
-        min_ts: int = to_ts
+        current_time: int = from_ts
+        while current_time < to_ts:
+            lower_bound: int = current_time
+            upper_bound: int = current_time + time_step
 
-        while min_ts > from_ts:
             query: Query = (
                 character_events_query_factory()
                 .set_service_id(service_id=service_id)
                 .filter("character_id", ",".join((str(c) for c in batch_character_ids)))
-                .filter("before", min_ts)
+                .filter("after", lower_bound)
+                .filter("before", upper_bound)
                 .filter("type", ",".join(types))
                 .limit(max_query_events)
                 .limit_per_db(max_query_events)
@@ -98,23 +103,25 @@ def get_character_events(
 
             if "returned" not in res:
                 print(res)
-                raise Exception
+                raise Exception("Error !")
+
+            if res["returned"] >= max_query_events:
+                raise Exception("Too many !")
 
             iteration_events: List[dict] = res["characters_event_list"]
 
-            print(f"Got {len(iteration_events)} events prior to {min_ts}")
+            kept_events: int = 0
+            for e in filter(
+                lambda x: to_ts >= int(x["timestamp"]) >= from_ts, iteration_events
+            ):
+                events.append(e)
+                kept_events += 1
 
-            if iteration_events:
-                min_ts = min((int(e["timestamp"]) for e in iteration_events))
+            print(
+                f"Kept {kept_events} of {len(iteration_events)} events between {lower_bound} and {upper_bound}"
+            )
 
-                for e in filter(
-                    lambda x: int(x["timestamp"]) >= from_ts, iteration_events
-                ):
-                    events.append(e)
-
-                sleep(0.5)
-            else:
-                break
+            current_time = upper_bound
 
     print(f"Got {len(events)} character events in {queries_count} queries")
     return events
