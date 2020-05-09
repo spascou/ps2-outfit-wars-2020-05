@@ -1,5 +1,6 @@
 import csv
 import json
+import time
 from collections import Counter
 from typing import Callable, Dict, List, Tuple, Union
 
@@ -100,6 +101,8 @@ def get_character_events(
 
             res: dict = query.get()
             queries_count += 1
+
+            time.sleep(0.5)
 
             if "returned" not in res:
                 print(res)
@@ -558,7 +561,7 @@ def generate_outfit_characters_data(
         "resupply_ribbons",
     ]
 
-    with open(f"output/{slugify(outfit_name)}_members.csv", "w") as f:
+    with open(f"output/{slugify(outfit_name)}_members_{from_ts}_{to_ts}.csv", "w") as f:
         writer = csv.DictWriter(f, fieldnames=member_columns)
         writer.writeheader()
         writer.writerows(sorted(member_rows, key=lambda x: x["name"]))
