@@ -6,6 +6,7 @@ from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 from ps2_census import Collection, Join, Query
 from ps2_census.enums import Faction
+from requests.exceptions import HTTPError
 from slugify import slugify
 
 from utils import batch
@@ -99,10 +100,18 @@ def get_character_events(
                 .limit_per_db(max_query_events)
             )
 
-            res: dict = query.get()
+            res: dict
+            for i in range(10):
+                try:
+                    res = query.get()
+                except HTTPError:
+                    print(f"Retry {i}")
+                    continue
+                break
+
             queries_count += 1
 
-            time.sleep(1)
+            time.sleep(0.25)
 
             if "returned" not in res:
                 print(res)
@@ -135,9 +144,18 @@ def get_active_outfit_members(
 ) -> List[Dict[str, Union[int, str]]]:
     print(f"Getting outfit members")
 
-    res: dict = outfit_members_query_factory().set_service_id(service_id).filter(
+    query: Query = outfit_members_query_factory().set_service_id(service_id).filter(
         "name", outfit_name
-    ).get()
+    )
+
+    res: dict
+    for i in range(10):
+        try:
+            res = query.get()
+        except HTTPError:
+            print(f"Retry {i}")
+            continue
+        break
 
     if "returned" not in res:
         print(res)
