@@ -2,7 +2,7 @@ import csv
 import json
 import time
 from collections import Counter
-from typing import Callable, Dict, List, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 from ps2_census import Collection, Join, Query
 from ps2_census.enums import Faction
@@ -102,7 +102,7 @@ def get_character_events(
             res: dict = query.get()
             queries_count += 1
 
-            time.sleep(0.5)
+            time.sleep(1)
 
             if "returned" not in res:
                 print(res)
@@ -167,37 +167,45 @@ def get_active_outfit_members(
 
 
 def generate_outfit_characters_data(
-    service_id: str, outfit_name: str, from_ts: int, to_ts: int
+    service_id: str, outfit_name: str, time_frames: Iterable[Tuple[int, int]]
 ):
-    members: List[Dict[str, str]] = get_active_outfit_members(
-        service_id=service_id, outfit_name=outfit_name, active_after_ts=from_ts
-    )
+    member_events: List[dict] = []
 
-    member_events: List[dict] = get_character_events(
-        service_id=service_id,
-        character_ids=[m["id"] for m in members],
-        from_ts=from_ts,
-        to_ts=to_ts,
-    )
+    for from_ts, to_ts in time_frames:
+        print(f"From {from_ts} to {to_ts}")
 
-    duplicates: List[Tuple[dict, int]] = [
-        (json.loads(v), c)
-        for v, c in Counter(
-            (json.dumps(e, sort_keys=True) for e in member_events)
-        ).items()
-        if c > 1
-    ]
+        members: List[Dict[str, str]] = get_active_outfit_members(
+            service_id=service_id, outfit_name=outfit_name, active_after_ts=from_ts
+        )
 
-    print(
-        f"""
-        {len(duplicates)} duplicates
-        of orders {set((c for _, c in duplicates))},
-        between {min((e['timestamp'] for e, _ in duplicates))}
-        and {max((e['timestamp'] for e, _ in duplicates))}
-    """
-    )
+        time_frame_events: List[dict] = (
+            get_character_events(
+                service_id=service_id,
+                character_ids=[m["id"] for m in members],
+                from_ts=from_ts,
+                to_ts=to_ts,
+            )
+        )
 
-    print(f"{len(member_events) - len(duplicates)} unique events")
+        duplicates: List[Tuple[dict, int]] = [
+            (json.loads(v), c)
+            for v, c in Counter(
+                (json.dumps(e, sort_keys=True) for e in time_frame_events)
+            ).items()
+            if c > 1
+        ]
+
+        print(
+            f"""
+        {len(time_frame_events)} events
+        and {len(duplicates)} duplicates
+        of orders {set((c for _, c in duplicates))}
+        """
+        )
+
+        member_events += time_frame_events
+
+    print(f"Total {len(member_events)} events")
 
     member_rows: List[dict] = []
 
@@ -219,6 +227,24 @@ def generate_outfit_characters_data(
             member_row: dict = {
                 "name": name,
                 "rank": rank,
+                "active_time_hours": round(
+                    (15 * 60)
+                    * len(
+                        set(
+                            int(e["timestamp"]) // (15 * 60)
+                            for e in filter(
+                                lambda x: m_id
+                                in {
+                                    int(x["character_id"]),
+                                    int(x.get("attacker_character_id", 0)),
+                                },
+                                m_events,
+                            )
+                        )
+                    )
+                    / 3600,
+                    2,
+                ),
                 "kills": len(
                     list(
                         filter(
@@ -529,6 +555,7 @@ def generate_outfit_characters_data(
     member_columns: List[str] = [
         "name",
         "rank",
+        "active_time_hours",
         "kills",
         "vs_kills",
         "nc_kills",
@@ -561,7 +588,13 @@ def generate_outfit_characters_data(
         "resupply_ribbons",
     ]
 
-    with open(f"output/{slugify(outfit_name)}_members_{from_ts}_{to_ts}.csv", "w") as f:
+    time_frames_filename_part: str = "_".join(
+        "-".join(str(i) for i in e) for e in time_frames
+    )
+
+    with open(
+        f"output/{slugify(outfit_name)}_members_{time_frames_filename_part}.csv", "w"
+    ) as f:
         writer = csv.DictWriter(f, fieldnames=member_columns)
         writer.writeheader()
         writer.writerows(sorted(member_rows, key=lambda x: x["name"]))
