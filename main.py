@@ -10,8 +10,8 @@ OUTFIT_NAME: str = "The Last Ravens"
 if not SERVICE_ID:
     raise ValueError("CENSUS_SERVICE_ID envvar not found")
 
-START: int = 1589000400
-END: int = 1589029200
+START: int = 1589086800
+END: int = 1589115600
 
 generate_outfit_characters_data(
     service_id=SERVICE_ID, outfit_name=OUTFIT_NAME, from_ts=START, to_ts=END
