@@ -6,7 +6,6 @@ from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 from ps2_census import Collection, Join, Query
 from ps2_census.enums import Faction
-from requests.exceptions import HTTPError
 from slugify import slugify
 
 from utils import batch
@@ -31,6 +30,16 @@ character_events_query_factory: Callable[[], Query] = Query(
     .on("attacker_character_id")
     .to("character_id")
     .inject_at("attacker_character")
+).join(
+    Join(Collection.ITEM)
+    .on("attacker_weapon_id")
+    .to("item_id")
+    .inject_at("attacker_weapon_item")
+).join(
+    Join(Collection.VEHICLE)
+    .on("attacker_vehicle_id")
+    .to("vehicle_id")
+    .inject_at("vehicle")
 ).sort(
     ("timestamp", -1)
 ).get_factory()
@@ -71,6 +80,7 @@ def get_character_events(
     max_query_events: int = 250,
     max_query_character_ids: int = 10,
     time_step: int = 60 * 10,
+    custom_filter: Callable[[dict], bool] = lambda _: True,
 ):
     print(
         f"Getting character {types} events for {len(character_ids)} characters between {from_ts} and {to_ts}"
@@ -100,14 +110,7 @@ def get_character_events(
                 .limit_per_db(max_query_events)
             )
 
-            res: dict
-            for i in range(10):
-                try:
-                    res = query.get()
-                except HTTPError:
-                    print(f"Retry {i}")
-                    continue
-                break
+            res: dict = query.get()
 
             queries_count += 1
 
@@ -124,7 +127,9 @@ def get_character_events(
 
             kept_events: int = 0
             for e in filter(
-                lambda x: to_ts >= int(x["timestamp"]) >= from_ts, iteration_events
+                lambda x: (to_ts >= int(x["timestamp"]) >= from_ts)
+                and custom_filter(x),
+                iteration_events,
             ):
                 events.append(e)
                 kept_events += 1
@@ -140,22 +145,15 @@ def get_character_events(
 
 
 def get_active_outfit_members(
-    service_id: str, outfit_name: str, active_after_ts: int
+    service_id: str, outfit_tag: str, active_after_ts: int
 ) -> List[Dict[str, Union[int, str]]]:
     print(f"Getting outfit members")
 
     query: Query = outfit_members_query_factory().set_service_id(service_id).filter(
-        "name", outfit_name
+        "alias", outfit_tag
     )
 
-    res: dict
-    for i in range(10):
-        try:
-            res = query.get()
-        except HTTPError:
-            print(f"Retry {i}")
-            continue
-        break
+    res: dict = query.get()
 
     if "returned" not in res:
         print(res)
@@ -185,7 +183,10 @@ def get_active_outfit_members(
 
 
 def generate_outfit_characters_data(
-    service_id: str, outfit_name: str, time_frames: Iterable[Tuple[int, int]]
+    service_id: str,
+    outfit_tag: str,
+    time_frames: Iterable[Tuple[int, int]],
+    custom_filter: Callable[[dict], bool] = lambda _: True,
 ):
     member_events: List[dict] = []
 
@@ -193,7 +194,7 @@ def generate_outfit_characters_data(
         print(f"From {from_ts} to {to_ts}")
 
         members: List[Dict[str, str]] = get_active_outfit_members(
-            service_id=service_id, outfit_name=outfit_name, active_after_ts=from_ts
+            service_id=service_id, outfit_tag=outfit_tag, active_after_ts=from_ts
         )
 
         time_frame_events: List[dict] = (
@@ -202,6 +203,7 @@ def generate_outfit_characters_data(
                 character_ids=[m["id"] for m in members],
                 from_ts=from_ts,
                 to_ts=to_ts,
+                custom_filter=custom_filter,
             )
         )
 
@@ -297,6 +299,18 @@ def generate_outfit_characters_data(
                         )
                     )
                 ),
+                "tr_kills": len(
+                    list(
+                        filter(
+                            lambda x: x.get("table_type") == "kills"
+                            and int(x["character_id"]) != m_id
+                            and int(x["attacker_character_id"]) == m_id
+                            and Faction(int(x["character"]["faction_id"]))
+                            == Faction.TERRAN_REPUBLIC,
+                            m_events,
+                        )
+                    )
+                ),
                 "nso_kills": len(
                     list(
                         filter(
@@ -316,7 +330,7 @@ def generate_outfit_characters_data(
                             and int(x["character_id"]) != m_id
                             and int(x["attacker_character_id"]) == m_id
                             and Faction(int(x["character"]["faction_id"]))
-                            == Faction.TERRAN_REPUBLIC,
+                            == Faction(int(x["attacker_character"]["faction_id"])),
                             m_events,
                         )
                     )
@@ -331,6 +345,35 @@ def generate_outfit_characters_data(
                             m_events,
                         )
                     )
+                ),
+                "kill_weapons": json.dumps(
+                    Counter(
+                        (
+                            e["attacker_weapon_item"]["name"]["en"]
+                            for e in filter(
+                                lambda x: x.get("table_type") == "kills"
+                                and int(x["character_id"]) != m_id
+                                and int(x["attacker_character_id"]) == m_id
+                                and "attacker_weapon_item" in x
+                                and "name" in x["attacker_weapon_item"],
+                                m_events,
+                            )
+                        )
+                    ).most_common()
+                ),
+                "kill_vehicles": json.dumps(
+                    Counter(
+                        (
+                            e["vehicle"]["name"]["en"]
+                            for e in filter(
+                                lambda x: x.get("table_type") == "kills"
+                                and int(x["character_id"]) != m_id
+                                and int(x["attacker_character_id"]) == m_id
+                                and "vehicle" in x,
+                                m_events,
+                            )
+                        )
+                    ).most_common()
                 ),
                 "vehicle_destroys": len(
                     list(
@@ -378,6 +421,19 @@ def generate_outfit_characters_data(
                         )
                     )
                 ),
+                "tr_deaths": len(
+                    list(
+                        filter(
+                            lambda x: x.get("table_type") == "deaths"
+                            and int(x["character_id"]) == m_id
+                            and int(x["attacker_character_id"]) != m_id
+                            and "attacker_character" in x
+                            and Faction(int(x["attacker_character"]["faction_id"]))
+                            == Faction.TERRAN_REPUBLIC,
+                            m_events,
+                        )
+                    )
+                ),
                 "nso_deaths": len(
                     list(
                         filter(
@@ -399,7 +455,7 @@ def generate_outfit_characters_data(
                             and int(x["attacker_character_id"]) != m_id
                             and "attacker_character" in x
                             and Faction(int(x["attacker_character"]["faction_id"]))
-                            == Faction.TERRAN_REPUBLIC,
+                            == Faction(int(x["character"]["faction_id"])),
                             m_events,
                         )
                     )
@@ -423,6 +479,35 @@ def generate_outfit_characters_data(
                             m_events,
                         )
                     )
+                ),
+                "death_weapons": json.dumps(
+                    Counter(
+                        (
+                            e["attacker_weapon_item"]["name"]["en"]
+                            for e in filter(
+                                lambda x: x.get("table_type") == "deaths"
+                                and int(x["character_id"]) == m_id
+                                and int(x["attacker_character_id"]) != m_id
+                                and "attacker_weapon_item" in x
+                                and "name" in x["attacker_weapon_item"],
+                                m_events,
+                            )
+                        )
+                    ).most_common()
+                ),
+                "death_vehicles": json.dumps(
+                    Counter(
+                        (
+                            e["vehicle"]["name"]["en"]
+                            for e in filter(
+                                lambda x: x.get("table_type") == "deaths"
+                                and int(x["character_id"]) == m_id
+                                and int(x["attacker_character_id"]) != m_id
+                                and "vehicle" in x,
+                                m_events,
+                            )
+                        )
+                    ).most_common()
                 ),
                 "facility_captures": len(
                     list(
@@ -577,17 +662,23 @@ def generate_outfit_characters_data(
         "kills",
         "vs_kills",
         "nc_kills",
+        "tr_kills",
         "nso_kills",
         "teamkills",
         "headshot_kills",
+        "kill_weapons",
+        "kill_vehicles",
         "vehicle_destroys",
         "deaths",
         "vs_deaths",
         "nc_deaths",
+        "tr_deaths",
         "nso_deaths",
         "teamdeaths",
         "self_kills",
         "self_deaths",
+        "death_weapons",
+        "death_vehicles",
         "facility_captures",
         "facility_defends",
         "marksman_ribbons",
@@ -611,7 +702,7 @@ def generate_outfit_characters_data(
     )
 
     with open(
-        f"output/{slugify(outfit_name)}_members_{time_frames_filename_part}.csv", "w"
+        f"output/{slugify(outfit_tag)}_members_{time_frames_filename_part}.csv", "w"
     ) as f:
         writer = csv.DictWriter(f, fieldnames=member_columns)
         writer.writeheader()

@@ -1,2 +1,2 @@
-ps2-census==0.10.4
+ps2-census==0.12.5
 python-slugify==4.0.0
